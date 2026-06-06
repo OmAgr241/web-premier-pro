@@ -12,10 +12,12 @@ export const Timeline: React.FC = () => {
     setZoom, setScrollLeft, setCurrentTime, tool, selectedClipId, 
     setSelectedClipId, trimClip, updateClipProperties, deleteClip,
     splitClipAtPlayhead, snapEnabled, setSnapEnabled, addClipToTimeline,
-    toggleMuteTrack, toggleSoloTrack, toggleLockTrack, toggleVisibleTrack
+    toggleMuteTrack, toggleSoloTrack, toggleLockTrack, toggleVisibleTrack,
+    getCurrentTime, isPlaying
   } = useEditor();
 
   const rulerRef = useRef<HTMLDivElement>(null);
+  const playheadLineRef = useRef<HTMLDivElement>(null);
   const trackContentRef = useRef<HTMLDivElement>(null);
 
   // States for timeline dragging operations
@@ -46,6 +48,35 @@ export const Timeline: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedClipId]);
+
+  // Smooth playhead animation loop using requestAnimationFrame and direct DOM manipulation
+  useEffect(() => {
+    const updatePlayhead = () => {
+      if (playheadLineRef.current) {
+        const time = getCurrentTime();
+        playheadLineRef.current.style.left = `${time * zoom}px`;
+      }
+    };
+
+    // Keep playhead position initial/synced on renders
+    updatePlayhead();
+
+    let animationId: number;
+    const loop = () => {
+      updatePlayhead();
+      if (isPlaying) {
+        animationId = requestAnimationFrame(loop);
+      }
+    };
+
+    if (isPlaying) {
+      animationId = requestAnimationFrame(loop);
+    }
+
+    return () => {
+      if (animationId) cancelAnimationFrame(animationId);
+    };
+  }, [isPlaying, zoom, currentTime, getCurrentTime]);
 
   // Sync scroll positions of ruler and track body
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
@@ -408,17 +439,19 @@ export const Timeline: React.FC = () => {
               }}
             >
               {/* Vertical Playhead Line running through fader content */}
-              <div style={{
-                position: 'absolute',
-                top: 0,
-                bottom: 0,
-                left: `${currentTime * zoom}px`,
-                width: '1px',
-                backgroundColor: '#00d2d3',
-                boxShadow: '0 0 8px #00d2d3',
-                zIndex: 200,
-                pointerEvents: 'none'
-              }}>
+              <div 
+                ref={playheadLineRef}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  bottom: 0,
+                  width: '1px',
+                  backgroundColor: '#00d2d3',
+                  boxShadow: '0 0 8px #00d2d3',
+                  zIndex: 200,
+                  pointerEvents: 'none'
+                }}
+              >
                 {/* Playhead marker head flag */}
                 <div style={{
                   position: 'absolute',

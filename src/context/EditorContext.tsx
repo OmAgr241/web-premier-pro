@@ -6,6 +6,7 @@ import { audioEngine } from '../utils/audioEngine';
 import { getMediaElement } from '../utils/renderEngine';
 
 interface EditorContextProps extends EditorState {
+  getCurrentTime: () => number;
   setTool: (tool: ToolType) => void;
   setCurrentTime: (time: number) => void;
   setZoom: (zoom: number) => void;
@@ -237,6 +238,8 @@ export const EditorProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // App Core State
   const [tool, setToolState] = useState<ToolType>('select');
   const [currentTime, setCurrentTimeState] = useState<number>(0);
+  const currentTimeRef = useRef<number>(0);
+  const lastStateUpdateRef = useRef<number>(0);
   const [duration] = useState<number>(45);
   const [zoom, setZoom] = useState<number>(18); // default timeline zoom
   const [scrollLeft, setScrollLeft] = useState<number>(0);
@@ -377,58 +380,67 @@ export const EditorProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       lastTimeRef.current = timestamp;
 
       if (isPlaying) {
-        setCurrentTimeState((prevTime) => {
-          let nextTime = prevTime + (elapsedMs / 1000) * playbackSpeed;
+        const prevTime = currentTimeRef.current;
+        let nextTime = prevTime + (elapsedMs / 1000) * playbackSpeed;
+        
+        if (nextTime >= duration) {
+          setIsPlaying(false);
+          nextTime = 0;
+          currentTimeRef.current = 0;
+          setCurrentTimeState(0);
+        } else {
+          currentTimeRef.current = nextTime;
           
-          if (nextTime >= duration) {
-            setIsPlaying(false);
-            nextTime = 0;
+          // Throttle React state updates to 15fps (~66ms) to avoid CPU bottleneck
+          const now = performance.now();
+          if (now - lastStateUpdateRef.current > 66) {
+            setCurrentTimeState(nextTime);
+            lastStateUpdateRef.current = now;
           }
-          
-          // ==========================================
-          // SYNTHETIC AUDIO PLAYER ENGINE
-          // ==========================================
-          
-          // Look for any synthetic active audio clips
-          const activeAudioClips = clips.filter(
-            (c) => c.trackId.startsWith('a') && c.timelineStart <= nextTime && c.timelineEnd >= nextTime
-          );
+        }
 
-          let shouldPlayTone = false;
-          let activeToneTrack = 'a1';
+        // ==========================================
+        // SYNTHETIC AUDIO PLAYER ENGINE
+        // ==========================================
+        
+        // Look for any synthetic active audio clips
+        const activeAudioClips = clips.filter(
+          (c) => c.trackId.startsWith('a') && c.timelineStart <= nextTime && c.timelineEnd >= nextTime
+        );
+
+        let shouldPlayTone = false;
+        let activeToneTrack = 'a1';
+        
+        activeAudioClips.forEach((clip) => {
+          const clipTime = (nextTime - clip.timelineStart) + clip.sourceStart;
           
-          activeAudioClips.forEach((clip) => {
-            const clipTime = (nextTime - clip.timelineStart) + clip.sourceStart;
-            
-            // 1. SMPTE Slate 1000Hz Tone
-            if (clip.assetId === 'synth_color_bars') {
-              shouldPlayTone = true;
-              activeToneTrack = clip.trackId;
-            }
-
-            // 2. Film countdown leader beep (exactly at remaining = 2s / clipTime = 6.0s)
-            if (clip.assetId === 'synth_countdown') {
-              // Trigger beep inside [6.0s, 6.15s]
-              if (clipTime >= 6.0 && clipTime <= 6.18) {
-                audioEngine.triggerBeepOnce(clip.trackId, 202, 1000);
-              }
-            }
-          });
-
-          // Toggle oscillator tone for color bars
-          if (shouldPlayTone) {
-            audioEngine.startTone(activeToneTrack, 1000);
-          } else {
-            audioEngine.stopTone();
+          // 1. SMPTE Slate 1000Hz Tone
+          if (clip.assetId === 'synth_color_bars') {
+            shouldPlayTone = true;
+            activeToneTrack = clip.trackId;
           }
 
-          // Handle sync bounding triggers for regular media elements
-          clips.forEach((clip) => {
-            const asset = mediaBin.find((a) => a.id === clip.assetId);
-            if (!asset || asset.url === 'synthetic') return;
-            const el = getMediaElement(asset) as HTMLVideoElement | HTMLAudioElement;
-            if (!el) return;
+          // 2. Film countdown leader beep (exactly at remaining = 2s / clipTime = 6.0s)
+          if (clip.assetId === 'synth_countdown') {
+            if (clipTime >= 6.0 && clipTime <= 6.18) {
+              audioEngine.triggerBeepOnce(clip.trackId, 202, 1000);
+            }
+          }
+        });
 
+        // Toggle oscillator tone for color bars
+        if (shouldPlayTone) {
+          audioEngine.startTone(activeToneTrack, 1000);
+        } else {
+          audioEngine.stopTone();
+        }
+
+        // Handle sync bounding triggers for regular media elements
+        clips.forEach((clip) => {
+          const asset = mediaBin.find((a) => a.id === clip.assetId);
+          if (!asset || asset.url === 'synthetic') return;
+          const el = getMediaElement(asset);
+          if (el && (el instanceof HTMLVideoElement || el instanceof HTMLAudioElement)) {
             // Start playing if playhead enters clip
             if (prevTime < clip.timelineStart && nextTime >= clip.timelineStart) {
               el.currentTime = clip.sourceStart;
@@ -438,26 +450,31 @@ export const EditorProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             if (prevTime <= clip.timelineEnd && nextTime > clip.timelineEnd) {
               el.pause();
             }
-          });
-
-          return nextTime;
+          }
         });
       }
 
       requestRef.current = requestAnimationFrame(tick);
     };
 
-    requestRef.current = requestAnimationFrame(tick);
+    if (isPlaying) {
+      lastTimeRef.current = 0;
+      requestRef.current = requestAnimationFrame(tick);
+    }
 
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
   }, [isPlaying, clips, playbackSpeed, duration, mediaBin]);
 
+  const getCurrentTime = () => currentTimeRef.current;
+
   // Set local current time directly (Scrubbing / Playhead movement)
   const setCurrentTime = (time: number) => {
     const boundedTime = Math.max(0, Math.min(duration, time));
+    currentTimeRef.current = boundedTime;
     setCurrentTimeState(boundedTime);
+    lastStateUpdateRef.current = performance.now();
     audioEngine.clearBeeps(); // Reset beep timers
 
     // If seeking, manually update all native video/audio positions
@@ -465,8 +482,8 @@ export const EditorProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const asset = mediaBin.find((a) => a.id === clip.assetId);
       if (!asset) return;
 
-      const el = getMediaElement(asset) as HTMLVideoElement | HTMLAudioElement;
-      if (el) {
+      const el = getMediaElement(asset);
+      if (el && (el instanceof HTMLVideoElement || el instanceof HTMLAudioElement)) {
         if (boundedTime >= clip.timelineStart && boundedTime <= clip.timelineEnd) {
           const fileTime = (boundedTime - clip.timelineStart) + clip.sourceStart;
           el.currentTime = fileTime;
@@ -842,6 +859,7 @@ export const EditorProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   return (
     <EditorContext.Provider value={{
       currentTime,
+      getCurrentTime,
       duration,
       zoom,
       scrollLeft,

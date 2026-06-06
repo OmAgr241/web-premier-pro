@@ -8,7 +8,7 @@ import {
 
 export const ProgramMonitor: React.FC = () => {
   const {
-    currentTime, isPlaying, setPlaying, clips, mediaBin, duration,
+    currentTime, getCurrentTime, isPlaying, setPlaying, clips, mediaBin, duration,
     playbackResolution, setPlaybackResolution,
     safeMarginsEnabled, setSafeMarginsEnabled,
     setCurrentTime, tool, selectedClipId, setSelectedClipId, deleteClip
@@ -69,33 +69,32 @@ export const ProgramMonitor: React.FC = () => {
       if (!ctx) return;
 
       // Draw composite frame
-      renderCanvasFrame(ctx, currentTime, clips, mediaBin, {
+      renderCanvasFrame(ctx, getCurrentTime(), clips, mediaBin, {
         width: canvas.width,
         height: canvas.height,
         isPlaying,
-        resolution: playbackResolution,
         safeMargins: safeMarginsEnabled
       });
     };
 
-    // Trigger render frame on timeline tick
-    render();
-
-    // Set up rapid loop if playing
     let animationId: number;
-    const run = () => {
+    const loop = () => {
       render();
       if (isPlaying) {
-        animationId = requestAnimationFrame(run);
+        animationId = requestAnimationFrame(loop);
       }
     };
+
+    // Trigger initial render or seek frame
+    render();
+
     if (isPlaying) {
-      animationId = requestAnimationFrame(run);
+      animationId = requestAnimationFrame(loop);
     }
     return () => {
       if (animationId) cancelAnimationFrame(animationId);
     };
-  }, [currentTime, clips, mediaBin, isPlaying, canvasDimensions, playbackResolution, safeMarginsEnabled]);
+  }, [clips, mediaBin, isPlaying, canvasDimensions, safeMarginsEnabled, currentTime]);
 
   // Keyboard controls for frame step (Left/Right arrow) and Play/Pause (Space)
   useEffect(() => {
